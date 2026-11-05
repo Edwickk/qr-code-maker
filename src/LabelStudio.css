@@ -446,6 +446,42 @@
   color: #838c9c;
   margin: 12px 0;
 }
+.paper-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+}
+.paper-navigation .paper-preview {
+  flex: 0 1 auto;
+  max-width: calc(100% - 108px);
+  margin: 0;
+}
+.paper-nav-button {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 46px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #e2e6ef;
+  border-radius: 9px;
+  background: #fff;
+  color: #5f57d1;
+  box-shadow: 0 2px 7px #2734500a;
+  cursor: pointer;
+}
+.paper-nav-button:hover:not(:disabled) {
+  border-color: #aaa5ee;
+  background: #f8f7ff;
+}
+.paper-nav-button:disabled {
+  color: #b9bfcb;
+  background: #f8f9fb;
+  box-shadow: none;
+  cursor: default;
+}
 .paper-preview {
   position: relative;
   box-sizing: border-box;
@@ -482,9 +518,16 @@
   display: flex;
   gap: 7px;
   justify-content: center;
-  margin: 12px;
+  max-width: 100%;
+  margin: 12px auto;
+  padding: 4px 2px 8px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
 }
 .studio-print-pages button {
+  flex: 0 0 auto;
   padding: 7px 10px;
   border: 1px solid #e5e8ef;
   background: #fff;
@@ -872,5 +915,18 @@
   .qr-border-controls {
     flex-wrap: wrap;
     padding: 10px 12px;
+  }
+}
+@media (max-width: 480px) {
+  .paper-navigation {
+    gap: 6px;
+  }
+  .paper-navigation .paper-preview {
+    max-width: calc(100% - 80px);
+  }
+  .paper-nav-button {
+    flex-basis: 34px;
+    width: 34px;
+    height: 38px;
   }
 }
