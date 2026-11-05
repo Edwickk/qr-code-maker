@@ -10,6 +10,7 @@
     "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"*.{js,json,html,md}\""
   },
   "dependencies": {
+    "@vercel/functions": "^3.10.6",
     "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
     "papaparse": "^5.4.1",

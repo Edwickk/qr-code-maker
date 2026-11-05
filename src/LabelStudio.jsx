@@ -1764,8 +1764,7 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
             </div>
           </form>
         </div>
-      )}
-      {" "}
+      )}{" "}
     </div>
   );
 }

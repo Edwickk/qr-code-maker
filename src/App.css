@@ -170,6 +170,9 @@
 .topbar-right {
   gap: 17px;
 }
+.workspace-lock {
+  padding: 7px 10px;
+}
 .secure-pill {
   display: flex;
   align-items: center;
