@@ -5,6 +5,8 @@ import { readSheet } from "read-excel-file/browser";
 import JSZip from "jszip";
 import {
   ArrowDown,
+  ChevronLeft,
+  ChevronRight,
   ArrowUp,
   Copy,
   Eye,
@@ -333,6 +335,7 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
   const fileRef = useRef(null);
   const qrLogoRef = useRef(null);
   const templateRef = useRef(null);
+  const currentPageButtonRef = useRef(null);
   const active = elements.find((el) => el.id === selected);
   const paper = useMemo(() => {
     const d =
@@ -625,6 +628,18 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
   const printPages = Array.from({ length: pageCount }, (_, p) =>
     entries.slice(p * perPage, (p + 1) * perPage)
   );
+  useEffect(() => {
+    setPrintPage((page) => Math.min(page, pageCount - 1));
+  }, [pageCount]);
+  useEffect(() => {
+    if (workspace === "print") {
+      currentPageButtonRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "center",
+      });
+    }
+  }, [printPage, workspace]);
   const downloadPng = async () => {
     const current = active;
     if (!current) {
@@ -1552,13 +1567,9 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
         <section className="studio-workspace-panel print-workspace">
           <div className="print-controls">
             <h2>Print Preview</h2>
-            <button onClick={() => setPrintPage((p) => Math.max(0, p - 1))}>Previous</button>
             <span>
               Page {Math.min(printPage + 1, pageCount)} of {pageCount}
             </span>
-            <button onClick={() => setPrintPage((p) => Math.min(pageCount - 1, p + 1))}>
-              Next
-            </button>
             <button className="studio-primary" onClick={print}>
               <Printer size={15} /> Print / Save PDF
             </button>
@@ -1570,51 +1581,73 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
             For exact dimensions, choose 100% or Actual Size in the print dialog. Printer margins
             and calibration affect physical alignment.
           </div>
-          <div
-            className="paper-preview"
-            style={{
-              width: `min(80vw, ${paper.width * 2.4}px)`,
-              aspectRatio: `${paper.width}/${paper.height}`,
-            }}
-          >
+          <div className="paper-navigation">
+            <button
+              className="paper-nav-button"
+              aria-label="Previous page"
+              title="Previous page"
+              disabled={printPage === 0}
+              onClick={() => setPrintPage((p) => Math.max(0, p - 1))}
+            >
+              <ChevronLeft size={22} />
+            </button>
             <div
-              className="paper-label-grid"
+              className="paper-preview"
               style={{
-                left: `${(label.margins.left / paper.width) * 100}%`,
-                top: `${(label.margins.top / paper.height) * 100}%`,
-                width: `${((paper.width - label.margins.left - label.margins.right) / paper.width) * 100}%`,
-                height: `${((paper.height - label.margins.top - label.margins.bottom) / paper.height) * 100}%`,
-                gridTemplateColumns: `repeat(${cols}, ${(label.width / (paper.width - label.margins.left - label.margins.right)) * 100}%)`,
-                gridAutoRows: `${(label.height / (paper.height - label.margins.top - label.margins.bottom)) * 100}%`,
-                gap: `${(label.gapY / (paper.height - label.margins.top - label.margins.bottom)) * 100}% ${(label.gapX / (paper.width - label.margins.left - label.margins.right)) * 100}%`,
+                width: `min(80vw, ${paper.width * 2.4}px)`,
+                aspectRatio: `${paper.width}/${paper.height}`,
               }}
             >
-              {pageEntries.map((entry, i) => (
-                <div
-                  key={`${entry.i}-${entry.c}-${i}`}
-                  className="preview-label"
-                  style={{ background: label.background, borderColor: label.border }}
-                >
+              <div
+                className="paper-label-grid"
+                style={{
+                  left: `${(label.margins.left / paper.width) * 100}%`,
+                  top: `${(label.margins.top / paper.height) * 100}%`,
+                  width: `${((paper.width - label.margins.left - label.margins.right) / paper.width) * 100}%`,
+                  height: `${((paper.height - label.margins.top - label.margins.bottom) / paper.height) * 100}%`,
+                  gridTemplateColumns: `repeat(${cols}, ${(label.width / (paper.width - label.margins.left - label.margins.right)) * 100}%)`,
+                  gridAutoRows: `${(label.height / (paper.height - label.margins.top - label.margins.bottom)) * 100}%`,
+                  gap: `${(label.gapY / (paper.height - label.margins.top - label.margins.bottom)) * 100}% ${(label.gapX / (paper.width - label.margins.left - label.margins.right)) * 100}%`,
+                }}
+              >
+                {pageEntries.map((entry, i) => (
                   <div
-                    className="preview-label-inner"
-                    style={{
-                      width: `${label.width}mm`,
-                      height: `${label.height}mm`,
-                      transform: `scale(${previewScale})`,
-                    }}
+                    key={`${entry.i}-${entry.c}-${i}`}
+                    className="preview-label"
+                    style={{ background: label.background, borderColor: label.border }}
                   >
-                    {elements.map((el) => renderElement(el, entry.row))}
+                    <div
+                      className="preview-label-inner"
+                      style={{
+                        width: `${label.width}mm`,
+                        height: `${label.height}mm`,
+                        transform: `scale(${previewScale})`,
+                      }}
+                    >
+                      {elements.map((el) => renderElement(el, entry.row))}
+                    </div>
+                    {label.crop && <i className="crop-marks" />}
                   </div>
-                  {label.crop && <i className="crop-marks" />}
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
+            <button
+              className="paper-nav-button"
+              aria-label="Next page"
+              title="Next page"
+              disabled={printPage >= pageCount - 1}
+              onClick={() => setPrintPage((p) => Math.min(pageCount - 1, p + 1))}
+            >
+              <ChevronRight size={22} />
+            </button>
           </div>
           <div className="studio-print-pages">
             {printPages.map((pageItems, p) => (
               <button
                 key={p}
                 className={p === printPage ? "current" : ""}
+                aria-current={p === printPage ? "page" : undefined}
+                ref={p === printPage ? currentPageButtonRef : undefined}
                 onClick={() => setPrintPage(p)}
               >
                 Page {p + 1} <small>{pageItems.length} labels</small>
