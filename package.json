@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"*.{js,json,html,md}\""
   },
   "dependencies": {
     "jszip": "^3.10.1",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "prettier": "^3.9.10",
     "vite": "^6.0.5"
   }
 }
