@@ -132,7 +132,7 @@ function QRView({ value, color = "#172554", background = "#ffffff", margin = 2, 
 
 async function drawQrElement(ctx, element, value, x, y, width, height, scale) {
   const url = await QRCode.toDataURL(String(value || " "), {
-    width: 1200,
+    width: Math.min(1200, Math.max(420, Math.ceil(Math.max(width, height) * 2))),
     margin: element.margin,
     errorCorrectionLevel: element.logo ? "H" : "M",
     color: { dark: element.color, light: element.background || "#fff" },
@@ -182,9 +182,60 @@ async function drawQrElement(ctx, element, value, x, y, width, height, scale) {
   }
 }
 
+const EXPORT_DPI = 300;
+
+function wrapCanvasText(context, value, maxWidth, wrap) {
+  const text = String(value ?? "");
+  if (!wrap) return [text.replace(/[\r\n]+/g, " ")];
+
+  const lines = [];
+  for (const paragraph of text.split(/\r?\n/)) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (context.measureText(candidate).width <= maxWidth) {
+        line = candidate;
+        continue;
+      }
+      if (line) lines.push(line);
+      line = "";
+      for (const character of word) {
+        if (line && context.measureText(`${line}${character}`).width > maxWidth) {
+          lines.push(line);
+          line = character;
+        } else {
+          line += character;
+        }
+      }
+    }
+    lines.push(line);
+  }
+  return lines.length ? lines : [""];
+}
+
+function safeExportFilename(pattern, row, index, extension) {
+  const base = String(pattern || "label-{index}")
+    .replace(/\{([^{}]+)\}/g, (token, key) =>
+      key.toLowerCase() === "index" ? String(index).padStart(4, "0") : String(row?.[key] ?? "")
+    )
+    .replace(/\.(png|jpe?g)$/i, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 100);
+  return `${base || `label-${String(index).padStart(4, "0")}`}.${extension}`;
+}
+
+function resolveElementText(element, row) {
+  return element.binding
+    ? (row?.[element.binding] ?? `Missing: ${element.binding}`)
+    : element.text;
+}
+
 function renderElement(el, row, interactive = false, handlers = {}) {
   if (!el.visible) return null;
-  const value = el.binding ? (row?.[el.binding] ?? `Missing: ${el.binding}`) : el.text;
+  const value = resolveElementText(el, row);
   const common = {
     position: "absolute",
     left: `${el.x}mm`,
@@ -321,6 +372,30 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
   const [recordPage, setRecordPage] = useState(0);
   const [printPage, setPrintPage] = useState(0);
   const [notice, setNotice] = useState("");
+  const [exportFormat, setExportFormat] = useState(() => {
+    try {
+      return localStorage.getItem("qr-studio-export-format") === "jpeg" ? "jpeg" : "png";
+    } catch {
+      return "png";
+    }
+  });
+  const [jpegQuality, setJpegQuality] = useState(() => {
+    try {
+      const quality = Number(localStorage.getItem("qr-studio-jpeg-quality"));
+      return Number.isFinite(quality) && quality >= 0.5 && quality <= 1 ? quality : 0.92;
+    } catch {
+      return 0.92;
+    }
+  });
+  const [filenamePattern, setFilenamePattern] = useState(() => {
+    try {
+      return localStorage.getItem("qr-studio-filename-pattern") || "label-{index}";
+    } catch {
+      return "label-{index}";
+    }
+  });
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportProgress, setExportProgress] = useState("");
   const [templateName, setTemplateName] = useState("");
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -335,7 +410,9 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
   const fileRef = useRef(null);
   const qrLogoRef = useRef(null);
   const templateRef = useRef(null);
+  const filenameInputRef = useRef(null);
   const currentPageButtonRef = useRef(null);
+  const exportImageCacheRef = useRef(new Map());
   const active = elements.find((el) => el.id === selected);
   const paper = useMemo(() => {
     const d =
@@ -382,6 +459,9 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
     : [{ row: {}, i: 0, c: 0 }];
   const pageCount = perPage ? Math.max(1, Math.ceil(entries.length / perPage)) : 1;
   const pageEntries = entries.slice(printPage * perPage, (printPage + 1) * perPage);
+  const selectedRecordLabel = records.length
+    ? `${recordPage + 1} · ${String(records[recordPage]?.[headers[0]] || `CSV row ${recordPage + 2}`)}`
+    : "No bulk record selected";
   const updateElement = (key, value) =>
     setElements((list) =>
       list.map((el) => {
@@ -640,78 +720,278 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
       });
     }
   }, [printPage, workspace]);
-  const downloadPng = async () => {
-    const current = active;
-    if (!current) {
-      setNotice("Select an element to export; use print to export the full sheet.");
-      return;
-    }
-    if (current.type !== "qr") {
-      setNotice("PNG export is available for QR elements. Print preview supports the full design.");
-      return;
-    }
+  const renderLabelBlob = async (row = {}) => {
+    const missingField = elements.find(
+      (el) => el.visible && el.binding && !headers.includes(el.binding)
+    );
+    if (missingField) throw new Error(`The data field “${missingField.binding}” is missing.`);
+    const missingQr = elements.find(
+      (el) => el.visible && el.type === "qr" && el.binding && !String(row[el.binding] ?? "").trim()
+    );
+    if (missingQr) throw new Error(`QR content is empty in “${missingQr.binding}”.`);
+
+    const scale = EXPORT_DPI / 25.4;
     const canvas = document.createElement("canvas");
-    const outputSize = 1200;
-    const scale = outputSize / current.w;
-    canvas.width = outputSize;
-    canvas.height = outputSize;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Unable to create the QR image canvas.");
-    await drawQrElement(ctx, current, current.content, 0, 0, outputSize, outputSize, scale);
-    const anchor = document.createElement("a");
-    anchor.href = canvas.toDataURL("image/png");
-    anchor.download = "qr-code.png";
-    anchor.click();
-  };
-  const downloadZip = async () => {
-    if (!records.length) {
-      setNotice("Import CSV records first.");
-      return;
+    canvas.width = Math.max(1, Math.round(label.width * scale));
+    canvas.height = Math.max(1, Math.round(label.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Unable to create a label export canvas.");
+
+    context.fillStyle = label.background || "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    if (Number(label.borderWidth) > 0) {
+      const borderWidth = Number(label.borderWidth) * scale;
+      context.strokeStyle = label.border || "#d9deea";
+      context.lineWidth = borderWidth;
+      context.strokeRect(
+        borderWidth / 2,
+        borderWidth / 2,
+        canvas.width - borderWidth,
+        canvas.height - borderWidth
+      );
     }
-    const zip = new JSZip();
-    for (const [i, entry] of entries.entries()) {
-      const canvas = document.createElement("canvas");
-      const scale = 10;
-      canvas.width = label.width * scale;
-      canvas.height = label.height * scale;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("Unable to create a label export canvas.");
-      ctx.fillStyle = label.background;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      for (const el of elements) {
-        if (!el.visible) continue;
-        if (el.type === "qr") {
-          await drawQrElement(
-            ctx,
-            el,
-            el.binding ? entry.row[el.binding] : el.content,
-            el.x * scale,
-            el.y * scale,
-            el.w * scale,
-            el.h * scale,
-            scale
-          );
-        } else if (el.type === "text") {
-          ctx.fillStyle = el.color;
-          ctx.font = `${el.italic ? "italic " : ""}${el.bold ? "bold " : ""}${(el.fontSize * scale) / 2.83}px ${el.fontFamily || "Arial"}`;
-          ctx.fillText(
-            String(el.binding ? entry.row[el.binding] || "" : el.text),
-            el.x * scale,
-            (el.y + el.h * 0.75) * scale,
-            el.w * scale
+
+    for (const element of elements) {
+      if (!element.visible || element.w <= 0 || element.h <= 0) continue;
+      const width = element.w * scale;
+      const height = element.h * scale;
+      const centerX = (element.x + element.w / 2) * scale;
+      const centerY = (element.y + element.h / 2) * scale;
+      const left = -width / 2;
+      const top = -height / 2;
+
+      context.save();
+      context.globalAlpha = Math.max(0, Math.min(1, Number(element.opacity ?? 1)));
+      context.translate(centerX, centerY);
+      context.rotate((Number(element.rotation) || 0) * (Math.PI / 180));
+      context.beginPath();
+      context.rect(left, top, width, height);
+      context.clip();
+
+      if (element.type === "qr") {
+        await drawQrElement(
+          context,
+          element,
+          element.binding ? row[element.binding] : element.content,
+          left,
+          top,
+          width,
+          height,
+          scale
+        );
+      } else if (element.type === "text") {
+        const fontSize = Math.max(1, (Number(element.fontSize) || 10) * (EXPORT_DPI / 72));
+        context.font = `${element.italic ? "italic " : ""}${element.bold ? "bold " : ""}${fontSize}px ${element.fontFamily || "Arial"}`;
+        context.fillStyle = element.color || "#18213a";
+        context.textBaseline = "alphabetic";
+        context.textAlign = element.align || "left";
+        const textPadding = EXPORT_DPI / 96;
+        const textWidth = Math.max(0, width - textPadding * 2);
+        const value = resolveElementText(element, row);
+        const lines = wrapCanvasText(context, value || "Text", textWidth, element.wrap !== false);
+        const lineHeight = fontSize * 1.2;
+        const contentHeight = lines.length * lineHeight;
+        const verticalAlign = element.verticalAlign || "top";
+        const startY =
+          top +
+          (verticalAlign === "middle"
+            ? (height - contentHeight) / 2
+            : verticalAlign === "bottom"
+              ? height - contentHeight
+              : 0);
+        const metrics = context.measureText("Mg");
+        const fontBoxHeight =
+          (metrics.fontBoundingBoxAscent || fontSize * 0.8) +
+          (metrics.fontBoundingBoxDescent || fontSize * 0.2);
+        const baselineOffset = Math.max(0, (lineHeight - fontBoxHeight) / 2) +
+          (metrics.fontBoundingBoxAscent || fontSize * 0.8);
+        const textX =
+          element.align === "center"
+            ? 0
+            : element.align === "right"
+              ? width / 2 - textPadding
+              : left + textPadding;
+        for (const [lineIndex, line] of lines.entries()) {
+          context.fillText(
+            line,
+            textX,
+            startY + baselineOffset + lineIndex * lineHeight,
+            textWidth
           );
         }
+      } else if (element.type === "image" && element.image) {
+        let imagePromise = exportImageCacheRef.current.get(element.image);
+        if (!imagePromise) {
+          imagePromise = new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve(image);
+            image.onerror = () => reject(new Error("Unable to load a label image."));
+            image.src = element.image;
+          });
+          exportImageCacheRef.current.set(element.image, imagePromise);
+        }
+        const image = await imagePromise;
+        const fit = element.fit || "contain";
+        const ratio =
+          fit === "cover"
+            ? Math.max(width / image.naturalWidth, height / image.naturalHeight)
+            : Math.min(width / image.naturalWidth, height / image.naturalHeight);
+        const imageWidth = image.naturalWidth * ratio;
+        const imageHeight = image.naturalHeight * ratio;
+        context.drawImage(image, -imageWidth / 2, -imageHeight / 2, imageWidth, imageHeight);
+      } else if (["rect", "circle", "line"].includes(element.type)) {
+        const strokeWidth = Math.max(0, Number(element.strokeWidth ?? 0.3)) * scale;
+        if (element.type === "line") {
+          context.beginPath();
+          context.moveTo(left, 0);
+          context.lineTo(left + width, 0);
+          context.strokeStyle = element.stroke || "#635bdf";
+          context.lineWidth = Math.max(1, strokeWidth);
+          context.stroke();
+        } else {
+          context.beginPath();
+          if (element.type === "circle") {
+            context.ellipse(0, 0, width / 2, height / 2, 0, 0, Math.PI * 2);
+          } else {
+            context.rect(left, top, width, height);
+          }
+          if (element.fill && element.fill !== "transparent") {
+            context.fillStyle = element.fill;
+            context.fill();
+          }
+          if (strokeWidth > 0) {
+            context.strokeStyle = element.stroke || "#635bdf";
+            context.lineWidth = strokeWidth;
+            context.stroke();
+          }
+        }
       }
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve));
-      if (blob) zip.file(`label-${String(i + 1).padStart(4, "0")}.png`, blob);
+      context.restore();
     }
-    const blob = await zip.generateAsync({ type: "blob" });
+
+    const mimeType = exportFormat === "jpeg" ? "image/jpeg" : "image/png";
+    const blob = await new Promise((resolve) =>
+      canvas.toBlob(resolve, mimeType, exportFormat === "jpeg" ? jpegQuality : undefined)
+    );
+    if (!blob) throw new Error(`Unable to encode this ${exportFormat.toUpperCase()} label.`);
+    return blob;
+  };
+
+  const downloadBlob = (blob, filename) => {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "qr-labels.zip";
+    anchor.download = filename;
+    document.body.appendChild(anchor);
     anchor.click();
-    URL.revokeObjectURL(url);
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const downloadSingleLabel = async () => {
+    if (exportBusy) return;
+    setExportBusy(true);
+    setExportProgress("Rendering label at 300 DPI…");
+    try {
+      const row = records[recordPage] || {};
+      const blob = await renderLabelBlob(row);
+      downloadBlob(blob, safeExportFilename(filenamePattern, row, recordPage + 1, exportFormat));
+      setNotice(`Label exported as ${exportFormat.toUpperCase()}.`);
+    } catch (error) {
+      setNotice(error.message || "Unable to export this label.");
+    } finally {
+      setExportBusy(false);
+      setExportProgress("");
+    }
+  };
+
+  const downloadZip = async () => {
+    if (!records.length) {
+      setNotice("Import CSV or XLSX records before exporting a batch.");
+      return;
+    }
+    if (!entries.length) {
+      setNotice("No records match the current search.");
+      return;
+    }
+    if (exportBusy) return;
+
+    setExportBusy(true);
+    setExportProgress(`Preparing ${entries.length} labels…`);
+    const zip = new JSZip();
+    const folder = zip.folder("qr-labels");
+    const failures = [];
+    const usedNames = new Set();
+
+    try {
+      for (const [i, entry] of entries.entries()) {
+        try {
+          const blob = await renderLabelBlob(entry.row);
+          let filename = safeExportFilename(filenamePattern, entry.row, i + 1, exportFormat);
+          const extensionIndex = filename.lastIndexOf(".");
+          const name = filename.slice(0, extensionIndex);
+          const extension = filename.slice(extensionIndex);
+          let duplicate = 2;
+          while (usedNames.has(filename.toLowerCase())) {
+            filename = `${name}-${duplicate}${extension}`;
+            duplicate += 1;
+          }
+          usedNames.add(filename.toLowerCase());
+          folder.file(filename, blob);
+        } catch (error) {
+          failures.push(`CSV row ${entry.i + 2}, copy ${entry.c + 1}: ${error.message}`);
+        }
+        if (i === entries.length - 1 || i % Math.max(1, Math.ceil(entries.length / 100)) === 0) {
+          setExportProgress(`Rendering label ${i + 1} of ${entries.length}…`);
+        }
+      }
+
+      if (usedNames.size === 0) {
+        setNotice(`No labels were exported. ${failures[0] || "Check the data bindings."}`);
+        return;
+      }
+
+      setExportProgress("Creating ZIP file…");
+      const blob = await zip.generateAsync({ type: "blob", compression: "STORE" }, ({ percent }) =>
+        setExportProgress(`Creating ZIP file… ${Math.round(percent)}%`)
+      );
+      downloadBlob(blob, `qr-labels-${exportFormat}.zip`);
+      const failureSummary = failures.length
+        ? ` ${failures.length} label(s) failed; first issue: ${failures[0]}`
+        : "";
+      setNotice(`${usedNames.size} label(s) exported in the qr-labels folder.${failureSummary}`);
+    } catch (error) {
+      setNotice(error.message || "Unable to create the batch ZIP.");
+    } finally {
+      setExportBusy(false);
+      setExportProgress("");
+    }
+  };
+
+  const updateExportFormat = (format) => {
+    setExportFormat(format);
+    localStorage.setItem("qr-studio-export-format", format);
+  };
+  const updateJpegQuality = (quality) => {
+    setJpegQuality(quality);
+    localStorage.setItem("qr-studio-jpeg-quality", String(quality));
+  };
+  const updateFilenamePattern = (pattern) => {
+    setFilenamePattern(pattern);
+    localStorage.setItem("qr-studio-filename-pattern", pattern);
+  };
+  const insertFilenameField = (field) => {
+    if (!field) return;
+    const input = filenameInputRef.current;
+    const start = input?.selectionStart ?? filenamePattern.length;
+    const end = input?.selectionEnd ?? filenamePattern.length;
+    const token = `{${field}}`;
+    const next = `${filenamePattern.slice(0, start)}${token}${filenamePattern.slice(end)}`;
+    updateFilenamePattern(next);
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(start + token.length, start + token.length);
+    });
   };
 
   return (
@@ -1368,7 +1648,11 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
                   </thead>
                   <tbody>
                     {filtered.slice(0, 40).map(({ row, i }) => (
-                      <tr key={i} onClick={() => setRecordPage(i)}>
+                      <tr
+                        key={i}
+                        className={i === recordPage ? "selected-record" : ""}
+                        onClick={() => setRecordPage(i)}
+                      >
                         {<td>{i + 1}</td>}
                         {headers.map((h) => (
                           <td key={h}>{row[h] || <em>Missing</em>}</td>
@@ -1378,9 +1662,15 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
                   </tbody>
                 </table>
               </div>
-              <button className="studio-primary" onClick={downloadZip}>
-                <ArrowDown size={15} /> Export labels as ZIP
+              <button className="studio-primary" disabled={exportBusy} onClick={downloadZip}>
+                <ArrowDown size={15} />
+                {exportBusy ? "Exporting labels…" : `Export ${entries.length} labels as ZIP`}
               </button>
+              {workspace === "bulk" && exportProgress && (
+                <p className="export-progress" role="status">
+                  {exportProgress}
+                </p>
+              )}
             </>
           )}
         </section>
@@ -1660,6 +1950,72 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
         <section className="studio-workspace-panel">
           <h2>Templates & Export</h2>
           <p>Templates save in this browser. Export JSON to move a design to another device.</p>
+          <h3>Image export settings</h3>
+          <div className="export-settings-grid">
+            <label>
+              Image format
+              <select
+                value={exportFormat}
+                onChange={(event) => updateExportFormat(event.target.value)}
+              >
+                <option value="png">PNG</option>
+                <option value="jpeg">JPEG</option>
+              </select>
+            </label>
+            {exportFormat === "jpeg" && (
+              <label>
+                JPEG quality · {Math.round(jpegQuality * 100)}%
+                <input
+                  type="range"
+                  min="0.5"
+                  max="1"
+                  step="0.01"
+                  value={jpegQuality}
+                  onChange={(event) => updateJpegQuality(Number(event.target.value))}
+                />
+              </label>
+            )}
+            <label className="filename-setting">
+              Filename pattern
+              <div className="filename-pattern-control">
+                <input
+                  ref={filenameInputRef}
+                  value={filenamePattern}
+                  onChange={(event) => updateFilenamePattern(event.target.value)}
+                  placeholder="{StudentName}_{StudentNo}"
+                />
+                <select
+                  aria-label="Insert a bulk data field into the filename"
+                  value=""
+                  onChange={(event) => insertFilenameField(event.target.value)}
+                >
+                  <option value="">Insert field…</option>
+                  {headers.map((header) => (
+                    <option key={header} value={header}>
+                      {header}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <small>
+                Use <code>{"{ColumnName}"}</code> for imported data and <code>{"{index}"}</code> for
+                a padded sequence number.
+              </small>
+            </label>
+          </div>
+          <div className="export-record-choice">
+            <div>
+              <strong>Single label record</strong>
+              <span>
+                {records.length
+                  ? `${selectedRecordLabel} · choose a row from Data & Bulk Generation`
+                  : "No bulk data loaded. Static label content will be used."}
+              </span>
+            </div>
+            {records.length > 0 && (
+              <button onClick={() => onWorkspaceChange("bulk")}>Choose record</button>
+            )}
+          </div>
           <div className="template-actions">
             <button onClick={save}>Save current design</button>
             <button onClick={openTemplateSaveModal}>Save as template</button>
@@ -1672,9 +2028,33 @@ export default function LabelStudio({ workspace = "design", onWorkspaceChange })
               accept="application/json,.json"
               onChange={(e) => e.target.files?.[0] && loadTemplateFile(e.target.files[0])}
             />
-            <button onClick={downloadPng}>Export selected QR PNG</button>
-            <button onClick={downloadZip}>Export batch ZIP</button>
           </div>
+          <div className="export-actions">
+            <button
+              className="button button-secondary"
+              disabled={exportBusy}
+              onClick={downloadSingleLabel}
+            >
+              <ArrowDown size={15} /> Export current label as {exportFormat.toUpperCase()}
+            </button>
+            <button
+              className="studio-primary"
+              disabled={exportBusy || records.length === 0 || entries.length === 0}
+              onClick={downloadZip}
+            >
+              <ArrowDown size={15} />
+              {exportBusy ? "Exporting batch…" : `Export ${entries.length} labels as ZIP`}
+            </button>
+          </div>
+          <p className="export-folder-note">
+            The ZIP contains a <code>qr-labels</code> folder. Bulk search and copy settings are
+            applied.
+          </p>
+          {exportProgress && (
+            <p className="export-progress" role="status">
+              {exportProgress}
+            </p>
+          )}
           <h3>Saved templates</h3>
           {templates.length ? (
             templates.map((t) => (

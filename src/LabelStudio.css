@@ -382,6 +382,10 @@
 .record-table tbody tr:hover {
   background: #f8f7ff;
 }
+.record-table tbody tr.selected-record {
+  background: #f0efff;
+  box-shadow: inset 3px 0 #685fe4;
+}
 .record-table em {
   color: #c27749;
 }
@@ -547,6 +551,92 @@
   flex-wrap: wrap;
   gap: 8px;
   margin: 17px 0;
+}
+.export-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 14px 18px;
+  max-width: 760px;
+  margin: 14px 0 18px;
+}
+.export-settings-grid > label {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  color: #59647a;
+  font-size: 10px;
+  font-weight: 700;
+}
+.export-settings-grid input:not([type="range"]),
+.export-settings-grid select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 7px 9px;
+  border: 1px solid #e3e7ef;
+  border-radius: 6px;
+  background: #fff;
+  color: #414c63;
+  font-size: 10px;
+}
+.export-settings-grid input[type="range"] {
+  width: 100%;
+  accent-color: #655cde;
+}
+.export-settings-grid small {
+  color: #8b93a3;
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.filename-setting {
+  grid-column: 1 / -1;
+}
+.filename-pattern-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(145px, 210px);
+  gap: 8px;
+}
+.export-record-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  max-width: 760px;
+  padding: 12px;
+  border: 1px solid #e9ecf2;
+  border-radius: 8px;
+  background: #fafbfe;
+}
+.export-record-choice strong,
+.export-record-choice span {
+  display: block;
+}
+.export-record-choice strong {
+  margin-bottom: 4px;
+  color: #45516a;
+  font-size: 10px;
+}
+.export-record-choice span,
+.export-folder-note,
+.export-progress {
+  color: #8790a1;
+  font-size: 9px;
+}
+.export-record-choice button {
+  flex: 0 0 auto;
+}
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+.export-folder-note {
+  margin: 8px 0;
+}
+.export-progress {
+  color: #6259d7;
 }
 .template-row {
   gap: 10px;
@@ -915,6 +1005,16 @@
   .qr-border-controls {
     flex-wrap: wrap;
     padding: 10px 12px;
+  }
+  .export-settings-grid {
+    grid-template-columns: 1fr;
+  }
+  .filename-setting {
+    grid-column: auto;
+  }
+  .export-record-choice {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 @media (max-width: 480px) {
