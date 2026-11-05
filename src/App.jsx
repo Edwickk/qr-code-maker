@@ -15,6 +15,7 @@ import {
   History,
   LayoutDashboard,
   Link2,
+  LogOut,
   Menu,
   Palette,
   Plus,
@@ -515,6 +516,13 @@ function App() {
   };
 
   const pageTitle = NAV.find((item) => item.id === page)?.label || "QR Generator";
+  const lockWorkspace = async () => {
+    try {
+      await fetch("/__auth/logout", { method: "POST", credentials: "same-origin" });
+    } finally {
+      window.location.replace("/");
+    }
+  };
 
   return (
     <div className="app-shell">
@@ -599,6 +607,11 @@ function App() {
             <span className="secure-pill">
               <span className="status-dot" /> Browser-based
             </span>
+            {import.meta.env.PROD && (
+              <button className="button button-secondary workspace-lock" onClick={lockWorkspace}>
+                <LogOut size={14} /> Lock
+              </button>
+            )}
             <div className="avatar">Q</div>
           </div>
         </header>
